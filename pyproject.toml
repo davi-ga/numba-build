@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numba-runtime-middleware"
+version = "0.1.0"
+description = "Runtime middleware for Numba-annotated Cloud Run containers: warm-up, telemetry and fallback."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "psutil",
+]
+
+[project.optional-dependencies]
+build = [
+    "google-genai",
+    "python-dotenv",
+    "pyflakes",
+]
+
+[project.scripts]
+numba-build = "build_pipeline:main"
+
+[tool.setuptools]
+py-modules = ["middleware", "build_pipeline"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

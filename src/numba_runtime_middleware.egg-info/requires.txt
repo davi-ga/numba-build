@@ -1,0 +1,7 @@
+numpy
+psutil
+
+[build]
+google-genai
+python-dotenv
+pyflakes

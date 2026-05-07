@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: numba-runtime-middleware
+Version: 0.1.0
+Summary: Runtime middleware for Numba-annotated Cloud Run containers: warm-up, telemetry and fallback.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: psutil
+Provides-Extra: build
+Requires-Dist: google-genai; extra == "build"
+Requires-Dist: python-dotenv; extra == "build"
+Requires-Dist: pyflakes; extra == "build"

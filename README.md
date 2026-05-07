@@ -1,4 +1,4 @@
-# numba-build
+# numba-runtime-middleware
 
 LLM as an Intelligent Compiler — uses the Gemini API at **build time** to modularise Python source code and inject `@numba.njit` decorators, then provides a lightweight **runtime middleware** for Cloud Run containers with warm-up, telemetry and fallback.
 
@@ -33,12 +33,12 @@ numba-build --source-dir src/              Middleware(modules=[...])
 
 **Runtime only** (Cloud Run container — minimal dependencies):
 ```bash
-pip install git+https://github.com/seu-usuario/tcc.git
+pip install git+https://github.com/davi-ga/numba-build
 ```
 
 **Build + Runtime** (CI/CD pipeline — includes Gemini SDK):
 ```bash
-pip install "git+https://github.com/seu-usuario/tcc.git[build]"
+pip install "git+https://github.com/davi-ga/numba-build[build]"
 ```
 
 ---
@@ -74,7 +74,7 @@ created_files = run(source_dir="my_project/", output_dir="dist/")
 steps:
   - name: "python:3.12-slim"
     entrypoint: pip
-    args: ["install", "--no-cache-dir", "numba-runtime-middleware[build]@git+https://github.com/seu-usuario/tcc.git"]
+    args: ["install", "--no-cache-dir", "numba-runtime-middleware[build]@git+https://github.com/davi-ga/numba-build.git"]
 
   - name: "python:3.12-slim"
     entrypoint: numba-build

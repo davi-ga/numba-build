@@ -1,2 +1,0 @@
-[console_scripts]
-numba-build = build_pipeline:main

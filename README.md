@@ -1,4 +1,4 @@
-# numba-runtime-middleware
+# numba-build
 
 LLM as an Intelligent Compiler — uses the Gemini API at **build time** to modularise Python source code and inject `@numba.njit` decorators, then provides a lightweight **runtime middleware** for Cloud Run containers with warm-up, telemetry and fallback.
 

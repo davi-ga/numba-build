@@ -21,14 +21,12 @@ class Inserter(ast.NodeTransformer):
         self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]
     ) -> bool:
         for dec in node.decorator_list:
-            # @numba.njit  /  @numba.jit
             if (
                 isinstance(dec, ast.Attribute)
                 and isinstance(dec.value, ast.Name)
                 and dec.value.id == "numba"
             ):
                 return True
-            # bare @njit or @jit
             if isinstance(dec, ast.Name) and dec.id in ("njit", "jit"):
                 return True
         return False
@@ -44,12 +42,25 @@ class Inserter(ast.NodeTransformer):
                 return True
         return False
 
+    def _has_untyped_empty_list(self, node: ast.FunctionDef) -> bool:
+        """Return True if any assignment targets an empty list literal."""
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Assign)
+                and isinstance(child.value, ast.List)
+                and len(child.value.elts) == 0
+            ):
+                return True
+        return False
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        # Skip if already annotated to avoid duplicates.
         if self._has_numba_decorator(node):
             return node
-        # Skip if the body uses builtins incompatible with nopython mode.
+
         if self._has_unsupported_calls(node):
+            return node
+
+        if self._has_untyped_empty_list(node):
             return node
 
         decorator = ast.Attribute(

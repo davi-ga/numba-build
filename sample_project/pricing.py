@@ -1,11 +1,12 @@
 """
 pricing.py — Monte Carlo Options Surface + Implied Volatility Surface
 """
+
 import math
 import random
 
-
 # ── Black-Scholes helpers (used by implied-vol Newton-Raphson) ──────────────
+
 
 def _norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -18,7 +19,7 @@ def _norm_pdf(x):
 def bs_call_price(S, K, T, r, sigma):
     if T <= 0.0 or sigma <= 0.0:
         return max(S - K * math.exp(-r * T), 0.0)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
 
@@ -26,11 +27,12 @@ def bs_call_price(S, K, T, r, sigma):
 def bs_vega(S, K, T, r, sigma):
     if T <= 0.0 or sigma <= 0.0:
         return 1e-10
-    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     return S * math.sqrt(T) * _norm_pdf(d1)
 
 
 # ── GBM path (single asset, pure Python) ────────────────────────────────────
+
 
 def gbm_path(S0, mu, sigma, steps, dt):
     path = [0.0] * (steps + 1)
@@ -38,12 +40,13 @@ def gbm_path(S0, mu, sigma, steps, dt):
     for i in range(1, steps + 1):
         z = random.gauss(0.0, 1.0)
         path[i] = path[i - 1] * math.exp(
-            (mu - 0.5 * sigma ** 2) * dt + sigma * math.sqrt(dt) * z
+            (mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * z
         )
     return path
 
 
 # ── Monte Carlo call pricer ──────────────────────────────────────────────────
+
 
 def mc_call_price(S, K, T, r, sigma, n_paths, steps):
     dt = T / steps
@@ -57,6 +60,7 @@ def mc_call_price(S, K, T, r, sigma, n_paths, steps):
 # ── Options surface: n_strikes × n_mats × n_paths ───────────────────────────
 # Full scale: 10 × 8 × 200_000 = 16_000_000 GBM evaluations
 # Needs JIT for reasonable runtime
+
 
 def mc_options_surface(S, strikes, maturities, r, sigma, n_paths, steps_per_year=52):
     surface = []
@@ -73,6 +77,7 @@ def mc_options_surface(S, strikes, maturities, r, sigma, n_paths, steps_per_year
 # Up to max_iter scalar iterations per grid cell — cheap individually,
 # but 10 × 8 = 80 cells means 8_000 iterations total; JIT helps when
 # this is called inside a larger loop.
+
 
 def implied_vol(S, K, T, r, market_price, max_iter=100, tol=1e-7):
     sigma = 0.20

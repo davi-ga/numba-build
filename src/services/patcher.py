@@ -51,8 +51,6 @@ class PatcherService:
             rel_path = doc["path"]
             body = doc["body"]
 
-            # Resolve and validate the path to prevent path traversal from
-            # LLM-provided filenames (e.g. "../../../etc/passwd").
             abs_output = os.path.realpath(output_dir)
             abs_path = os.path.realpath(os.path.join(output_dir, rel_path))
             if not abs_path.startswith(abs_output + os.sep) and abs_path != abs_output:

@@ -24,6 +24,7 @@ import sys
 from services.annotator import AnnotatorService
 from services.model import ModelService
 from services.patcher import PatcherService
+import py_compile, tempfile, os
 
 
 def _parse_args() -> argparse.Namespace:
@@ -153,6 +154,18 @@ def run(source_dir: str, output_dir: str) -> list[str]:
             f"LLM did not return a valid JSON array of files: {exc}\n"
             f"Raw output (first 500 chars): {raw_text[:500]}"
         ) from exc
+
+
+    for doc in documents:
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(doc["body"].encode())
+            tmp = f.name
+        try:
+            py_compile.compile(tmp, doraise=True)
+        except py_compile.PyCompileError as exc:
+            raise exc
+        finally:
+            os.unlink(tmp)
 
     # Step 4 — Numba annotation
     print(f"[numba-build] Annotating {len(documents)} file(s) with @numba.njit...")

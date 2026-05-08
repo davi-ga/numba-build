@@ -1,3 +1,4 @@
+from typing import Dict, Any
 import os
 import time
 from dotenv import load_dotenv
@@ -19,7 +20,7 @@ class ModelService:
             raise EnvironmentError("PROMPT environment variable is not set.")
         self.client = genai.Client(api_key=self.key)
 
-    def modularize(self, raw_code):
+    def modularize(self, raw_code: str) -> Dict[str, Any]:
 
         start = time.perf_counter()
         full_prompt = f"{self.base_prompt} {raw_code}"
@@ -27,7 +28,7 @@ class ModelService:
             model="gemini-3.1-flash-lite-preview",
             contents=full_prompt,
             config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=100)
+                thinking_config=types.ThinkingConfig(thinking_budget=500)
             ),
         )
         end = time.perf_counter()

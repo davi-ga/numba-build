@@ -144,17 +144,22 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 
     # Step 3 — Parse LLM output
     raw_text: str = model_data["text"]
+    
+    stripped = raw_text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[-1]  # drop opening fence line
+        stripped = stripped.rsplit("```", 1)[0]  # drop closing fence
+        stripped = stripped.strip()
     try:
-        documents: list[dict] = json.loads(raw_text)
+        documents: list[dict] = json.loads(stripped)
         if not isinstance(documents, list):
             raise ValueError("LLM output is not a JSON array.")
         _validate_documents(documents)
     except (json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(
             f"LLM did not return a valid JSON array of files: {exc}\n"
-            f"Raw output (first 500 chars): {raw_text[:500]}"
+            f"Raw output (first 500 chars): {raw_text}"
         ) from exc
-
 
     for doc in documents:
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
@@ -180,6 +185,7 @@ def run(source_dir: str, output_dir: str) -> list[str]:
         print(f"  - {path}")
 
     return created
+
 
 def main() -> None:
     """Entry point for the `numba-build` CLI command."""

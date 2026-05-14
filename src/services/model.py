@@ -25,10 +25,11 @@ class ModelService:
         start = time.perf_counter()
         full_prompt = f"{self.base_prompt} {raw_code}"
         response = self.client.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-3.1-pro-preview",
             contents=full_prompt,
             config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=500)
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=500),
             ),
         )
         end = time.perf_counter()

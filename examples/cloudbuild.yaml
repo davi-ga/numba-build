@@ -1,0 +1,157 @@
+# ==========================================================================
+# cloudbuild.yaml — Template for end-users of numba-build
+#
+# This pipeline is intended for a project that already has a web server
+# (Flask, FastAPI, etc.) and wants to use numba-build to JIT-optimise
+# a specific folder of computation functions before deploying to Cloud Run.
+#
+# Expected project layout (adapt to your own):
+#
+#   my-project/
+#     app.py                  ← your web server entrypoint (Flask / FastAPI)
+#     requirements.txt        ← your application dependencies
+#     Dockerfile              ← your own Dockerfile (see notes below)
+#     calc_functions/         ← folder with pure-Python helper functions
+#       pricing.py              that numba-build will annotate with @numba.njit
+#       math_utils.py
+#     optimized/              ← output_dir; created/overwritten by this pipeline
+#       pricing.py              (numba-optimised versions — do NOT commit these)
+#       math_utils.py
+#
+# Dockerfile requirements (minimum):
+#
+#   FROM python:3.12-slim
+#   RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+#       && rm -rf /var/lib/apt/lists/*
+#   WORKDIR /app
+#   COPY requirements.txt .
+#   RUN pip install --no-cache-dir -r requirements.txt
+#   COPY app.py .
+#   COPY optimized/ optimized/   # <-- the folder your app imports from
+#   EXPOSE 8080
+#   CMD ["python", "app.py"]
+#
+# Required secrets in Secret Manager:
+#   GEMINI_API_KEY   — Gemini API key
+#   REFACTOR_PROMPT  — System prompt sent to the LLM
+#
+# Required substitution variables (set in the trigger or pass via --substitutions):
+#   _SOURCE_DIR   — folder with the functions to optimise (default: calc_functions)
+#   _OUTPUT_DIR   — where the optimised files are written (default: optimized)
+#   _SERVICE_NAME — Cloud Run service name
+#   _REGION       — GCP region (default: us-central1)
+# ==========================================================================
+
+substitutions:
+  _SOURCE_DIR: utils
+  _OUTPUT_DIR: optimized
+  _SERVICE_NAME: my-service
+  _REGION: us-central1
+  _TAG: latest 
+
+steps:
+  # ------------------------------------------------------------------------ #
+  # 1. Install numba-build and run it in the same container so the binary
+  #    is available in $PATH. Cloud Build steps are isolated containers —
+  #    packages installed in one step do not persist to the next.
+  # ------------------------------------------------------------------------ #
+  - name: "python:3.12-slim"
+    id: numba-build
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --no-cache-dir .[build] && \
+        numba-build --source-dir $_SOURCE_DIR --output-dir $_OUTPUT_DIR
+    secretEnv:
+      - "GEMINI_API_KEY"
+      - "PROMPT"
+
+  # ------------------------------------------------------------------------ #
+  # 2. Validate generated artefacts (syntax check)
+  # ------------------------------------------------------------------------ #
+  - name: "python:3.12-slim"
+    id: validate-artifacts
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --quiet flake8 && \
+        flake8 $_OUTPUT_DIR/ --max-line-length=120 --extend-ignore=E501,W503,E302,W292
+    waitFor:
+      - numba-build
+
+  # ------------------------------------------------------------------------ #
+  # 4. Build the Docker image
+  #    Uses your project's own Dockerfile (not Dockerfile.optimized).
+  #    The optimised files in $_OUTPUT_DIR are already present in the workspace
+  #    and will be picked up by your COPY instruction.
+  # ------------------------------------------------------------------------ #
+  - name: "gcr.io/cloud-builders/docker"
+    id: docker-build
+    args:
+      - "build"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:$_TAG"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+      - "-f"
+      - "examples/Dockerfile"
+      - "examples/"
+    waitFor:
+      - validate-artifacts
+
+  # ------------------------------------------------------------------------ #
+  # 5. Push image to Container Registry
+  # ------------------------------------------------------------------------ #
+  - name: "gcr.io/cloud-builders/docker"
+    id: docker-push
+    args:
+      - "push"
+      - "--all-tags"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME"
+    waitFor:
+      - docker-build
+
+  # ------------------------------------------------------------------------ #
+  # 6. Deploy to Cloud Run
+  # ------------------------------------------------------------------------ #
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: deploy
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "$_SERVICE_NAME"
+      - "--image"
+      - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:$_TAG"
+      - "--region"
+      - "$_REGION"
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+      - "--memory"
+      - "2Gi"
+      - "--cpu"
+      - "2"
+      - "--timeout"
+      - "300"
+    waitFor:
+      - docker-push
+
+# -------------------------------------------------------------------------- #
+# Secrets from Secret Manager
+# -------------------------------------------------------------------------- #
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/GEMINI_API_KEY/versions/latest
+      env: "GEMINI_API_KEY"
+    - versionName: projects/$PROJECT_ID/secrets/PROMPT/versions/latest
+      env: "PROMPT"
+
+images:
+  - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:$_TAG"
+  - "gcr.io/$PROJECT_ID/$_SERVICE_NAME:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

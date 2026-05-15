@@ -8,7 +8,9 @@ class _EmptyListPatcher(ast.NodeTransformer):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
         return node
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+    def visit_AsyncFunctionDef(
+        self, node: ast.AsyncFunctionDef
+    ) -> ast.AsyncFunctionDef:
         return node
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
@@ -33,7 +35,19 @@ class _EmptyListPatcher(ast.NodeTransformer):
         return node
 
 
-_DEEP_TO_LIST_SRC = """\
+_DEEP_TO_LIST_SRC = """
+from numba.typed import List as NumbaList
+
+def _sanitize_for_numba(obj):
+    if isinstance(obj, list):
+        typed_l = NumbaList()
+        for item in obj:
+            typed_l.append(_sanitize_for_numba(item))
+        return typed_l
+    elif isinstance(obj, tuple):
+        return tuple(0.0 if isinstance(x, str) else _sanitize_for_numba(x) for x in obj)
+    return obj
+
 def _deep_to_list(obj):
     try:
         return [_deep_to_list(item) for item in obj]
@@ -47,12 +61,18 @@ class Inserter(ast.NodeTransformer):
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
         return node
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+    def visit_AsyncFunctionDef(
+        self, node: ast.AsyncFunctionDef
+    ) -> ast.AsyncFunctionDef:
         return node
 
-    _UNSUPPORTED_BUILTINS = frozenset({"print", "input", "open", "exec", "eval", "raise"})
+    _UNSUPPORTED_BUILTINS = frozenset(
+        {"print", "input", "open", "exec", "eval", "raise"}
+    )
 
-    def _has_numba_decorator(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> bool:
+    def _has_numba_decorator(
+        self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]
+    ) -> bool:
         for dec in node.decorator_list:
             if (
                 isinstance(dec, ast.Attribute)
@@ -66,7 +86,7 @@ class Inserter(ast.NodeTransformer):
 
     def _has_unsupported_calls(self, node: ast.FunctionDef) -> bool:
         for child in ast.walk(node):
-            if isinstance(child, ast.Try):          # try/except not supported by njit
+            if isinstance(child, ast.Try):  # try/except not supported by njit
                 return True
             if (
                 isinstance(child, ast.Call)
@@ -102,35 +122,44 @@ class Inserter(ast.NodeTransformer):
                 return True
         return False
 
-    def _make_wrapper(self, orig_name: str, jit_name: str, args: ast.arguments) -> ast.FunctionDef:
-        """Generate a plain Python wrapper that converts typed.List → list."""
+    def _make_wrapper(
+        self, orig_name: str, jit_name: str, args: ast.arguments
+    ) -> ast.FunctionDef:
+        """Generate a plain Python wrapper that sanitizes inputs and converts typed.List → list."""
+
         call_args = [
-            ast.Name(id=a.arg, ctx=ast.Load())
+            ast.Call(
+                func=ast.Name(id="_sanitize_for_numba", ctx=ast.Load()),
+                args=[ast.Name(id=a.arg, ctx=ast.Load())],
+                keywords=[],
+            )
             for a in args.posonlyargs + args.args
         ]
+
         call_kwargs = [
-            ast.keyword(arg=a.arg, value=ast.Name(id=a.arg, ctx=ast.Load()))
+            ast.keyword(
+                arg=a.arg,
+                value=ast.Call(
+                    func=ast.Name(id="_sanitize_for_numba", ctx=ast.Load()),
+                    args=[ast.Name(id=a.arg, ctx=ast.Load())],
+                    keywords=[],
+                ),
+            )
             for a in args.kwonlyargs
         ]
-        if args.vararg:
-            call_args.append(
-                ast.Starred(value=ast.Name(id=args.vararg.arg, ctx=ast.Load()), ctx=ast.Load())
-            )
-        if args.kwarg:
-            call_kwargs.append(
-                ast.keyword(arg=None, value=ast.Name(id=args.kwarg.arg, ctx=ast.Load()))
-            )
 
         jit_call = ast.Call(
             func=ast.Name(id=jit_name, ctx=ast.Load()),
             args=call_args,
             keywords=call_kwargs,
         )
+
         deep_call = ast.Call(
             func=ast.Name(id="_deep_to_list", ctx=ast.Load()),
             args=[jit_call],
             keywords=[],
         )
+
         wrapper = ast.FunctionDef(
             name=orig_name,
             args=args,
@@ -143,6 +172,10 @@ class Inserter(ast.NodeTransformer):
         return ast.fix_missing_locations(wrapper)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Union[ast.FunctionDef, list]:
+
+        if node.name in ("_sanitize_for_numba", "_deep_to_list"):
+            return node
+
         if self._has_numba_decorator(node):
             return node
         if self._has_unsupported_calls(node):
@@ -181,10 +214,14 @@ class Inserter(ast.NodeTransformer):
             isinstance(node, ast.FunctionDef) and node.name == "_deep_to_list"
             for node in tree.body
         ):
-            helper_node = ast.parse(_DEEP_TO_LIST_SRC).body[0]
-            ast.fix_missing_locations(helper_node)
+            helper_nodes = ast.parse(_DEEP_TO_LIST_SRC).body
+
+            for node in helper_nodes:
+                ast.fix_missing_locations(node)
+
             insert_idx = 0
             for i, node in enumerate(tree.body):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     insert_idx = i + 1
-            tree.body.insert(insert_idx, helper_node)
+
+            tree.body[insert_idx:insert_idx] = helper_nodes

@@ -66,16 +66,23 @@ def _annotate_documents(
 ) -> list[dict]:
     annotated = []
     for doc in documents:
+        path = doc["path"]
+        body = doc["body"]
+
+        if "__init__" in path:
+            annotated.append({"path": path, "body": body})
+            continue
+
         try:
-            annotated_body = annotator.transform(doc["body"])
+            body = annotator.transform(body)
         except SyntaxError as exc:
             print(
-                f"[numba-build] WARNING: Skipping annotation for '{doc['path']}' "
+                f"[numba-build] WARNING: Skipping annotation for '{path}' "
                 f"(SyntaxError): {exc}",
                 file=sys.stderr,
             )
-            annotated_body = doc["body"]
-        annotated.append({"path": doc["path"], "body": annotated_body})
+
+        annotated.append({"path": path, "body": body})
     return annotated
 
 
@@ -111,6 +118,7 @@ def run(source_dir: str, output_dir: str) -> list[str]:
     EnvironmentError — GEMINI_API_KEY or PROMPT not set.
     RuntimeError     — LLM call failed or returned invalid output.
     """
+
     missing = [v for v in ("GEMINI_API_KEY", "PROMPT") if not os.getenv(v)]
     if missing:
         raise EnvironmentError(
@@ -144,7 +152,7 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 
     # Step 3 — Parse LLM output
     raw_text: str = model_data["text"]
-    
+
     stripped = raw_text.strip()
     if stripped.startswith("```"):
         stripped = stripped.split("\n", 1)[-1]  # drop opening fence line

@@ -1,6 +1,6 @@
-# numba-build
+# forge
 
-LLM as an Intelligent Compiler — uses the Gemini API at **build time** to modularise Python source code and inject `@numba.njit` decorators, then provides a lightweight **runtime middleware** for Cloud Run containers with warm-up, telemetry and fallback.
+LLM as an Intelligent Compiler — uses the Gemini API at **build time** to modularize Python source code and inject `@numba.njit` decorators, then provides a lightweight **runtime middleware** for Cloud Run containers with warm-up, telemetry and fallback.
 
 ---
 
@@ -9,7 +9,7 @@ LLM as an Intelligent Compiler — uses the Gemini API at **build time** to modu
 ```
 BUILD TIME (CI/CD)                         RUNTIME (Cloud Run)
 ──────────────────────────────────         ──────────────────────────────────
-numba-build --source-dir src/              Middleware(modules=[...])
+forge --source-dir src/              Middleware(modules=[...])
   │                                          │
   ├── PatcherService                         ├── warmup()
   │   Discovers .py files                    │   Triggers Numba JIT compilation
@@ -17,7 +17,7 @@ numba-build --source-dir src/              Middleware(modules=[...])
   │                                          │
   ├── ModelService (Gemini API)              ├── call("func_name", *args)
   │   Sends code to the LLM                  │   Executes with telemetry
-  │   Receives modularised code back         │   CPU · RAM · wall-clock time
+  │   Receives modularized code back         │   CPU · RAM · wall-clock time
   │                                          │
   ├── AnnotatorService (AST)                 └── Fallback
   │   Injects import numba                       If @numba.njit raises,
@@ -33,12 +33,12 @@ numba-build --source-dir src/              Middleware(modules=[...])
 
 **Runtime only** (Cloud Run container — minimal dependencies):
 ```bash
-pip install git+https://github.com/davi-ga/numba-build
+pip install git+https://github.com/davi-ga/forge
 ```
 
 **Build + Runtime** (CI/CD pipeline — includes Gemini SDK):
 ```bash
-pip install "git+https://github.com/davi-ga/numba-build[build]"
+pip install "git+https://github.com/davi-ga/forge[build]"
 ```
 
 ---
@@ -57,7 +57,7 @@ pip install "git+https://github.com/davi-ga/numba-build[build]"
 ### CLI
 
 ```bash
-numba-build --source-dir my_project/ --output-dir dist/
+forge --source-dir my_project/ --output-dir dist/
 ```
 
 ### Python API
@@ -74,10 +74,10 @@ created_files = run(source_dir="my_project/", output_dir="dist/")
 steps:
   - name: "python:3.12-slim"
     entrypoint: pip
-    args: ["install", "--no-cache-dir", "numba-runtime-middleware[build]@git+https://github.com/davi-ga/numba-build.git"]
+    args: ["install", "--no-cache-dir", "numba-runtime-middleware[build]@git+https://github.com/davi-ga/forge.git"]
 
   - name: "python:3.12-slim"
-    entrypoint: numba-build
+    entrypoint: forge
     args: ["--source-dir", "my_project/", "--output-dir", "dist/"]
     secretEnv: ["GEMINI_API_KEY", "PROMPT"]
 
@@ -91,7 +91,7 @@ steps:
 
 ```python
 import calculator  # module from output_dir/, already in WORKDIR
-from middleware import Middleware
+from sentinel import Middleware
 
 # Register modules and optional fallbacks for each function
 mw = Middleware(
@@ -156,7 +156,7 @@ CMD ["python", "main.py"]
 ```
 src/
   build_pipeline.py   # Build-time pipeline — CLI + Python API
-  middleware.py       # Runtime middleware — warm-up, telemetry, fallback
+  sentinel.py       # Runtime middleware — warm-up, telemetry, fallback
   services/
     model.py          # Gemini API client
     annotator.py      # AST transformer (@numba.njit injection)

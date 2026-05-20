@@ -8,7 +8,7 @@ substitutions:
 
 steps:
   # ------------------------------------------------------------------ #
-  # 1. Install numba-build and its build dependencies
+  # 1. Install forge and its build dependencies
   # ------------------------------------------------------------------ #
   - name: "python:3.12-slim"
     id: install-deps
@@ -25,7 +25,7 @@ steps:
   # ------------------------------------------------------------------ #
   - name: "python:3.12-slim"
     id: llm-refactor
-    entrypoint: numba-build
+    entrypoint: forge
     args:
       - "--source-dir"
       - "$_SOURCE_DIR"

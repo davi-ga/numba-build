@@ -1,19 +1,20 @@
 """
-numba-build — LLM-based build-time refactoring pipeline.
+forge — LLM-based build-time refactoring pipeline.
 
 Discovers Python source files, sends them to the Gemini LLM for
 modularisation, injects @numba.njit decorators via AST, and writes the
 optimised artefacts to an output directory ready to be copied into a
 Cloud Run container.
 
-CLI usage (after pip install numba-runtime-middleware[build]):
-    numba-build --source-dir my_project/ --output-dir dist/
+CLI usage (after pip install sentinel[build]):
+    forge --source-dir my_project/ --output-dir dist/
 
 Environment variables:
     SOURCE_DIR      Override --source-dir default
     OUTPUT_DIR      Override --output-dir default
     GEMINI_API_KEY  Gemini API key (required)
-    PROMPT          System prompt sent to the LLM (required)
+    MODULARIZE_PROMPT   System prompt sent to the LLM (required)
+    TEST_PROMPT         Test prompot sent to the LLM (required)
 """
 
 import argparse
@@ -29,7 +30,7 @@ import py_compile, tempfile, os
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="numba-build",
+        prog="forge",
         description=(
             "LLM-based code refactoring step for CI/CD pipelines. "
             "Transforms plain Python source files into Numba-optimised "
@@ -50,10 +51,14 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _validate_env() -> None:
-    missing = [v for v in ("GEMINI_API_KEY", "PROMPT") if not os.getenv(v)]
+    missing = [
+        v
+        for v in ("GEMINI_API_KEY", "MODULARIZE_PROMPT", "TEST_PROMPT")
+        if not os.getenv(v)
+    ]
     if missing:
         print(
-            f"[numba-build] ERROR: Missing required environment variable(s): "
+            f"[forge] ERROR: Missing required environment variable(s): "
             f"{', '.join(missing)}",
             file=sys.stderr,
         )
@@ -77,7 +82,7 @@ def _annotate_documents(
             body = annotator.transform(body)
         except SyntaxError as exc:
             print(
-                f"[numba-build] WARNING: Skipping annotation for '{path}' "
+                f"[forge] WARNING: Skipping annotation for '{path}' "
                 f"(SyntaxError): {exc}",
                 file=sys.stderr,
             )
@@ -115,11 +120,15 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 
     Raises
     ------
-    EnvironmentError — GEMINI_API_KEY or PROMPT not set.
+    EnvironmentError — GEMINI_API_KEY, MODULARIZE_PROMPT or TEST_PROMPT not set.
     RuntimeError     — LLM call failed or returned invalid output.
     """
 
-    missing = [v for v in ("GEMINI_API_KEY", "PROMPT") if not os.getenv(v)]
+    missing = [
+        v
+        for v in ("GEMINI_API_KEY", "MODULARIZE_PROMPT", "TEST_PROMPT")
+        if not os.getenv(v)
+    ]
     if missing:
         raise EnvironmentError(
             f"Missing required environment variable(s): {', '.join(missing)}"
@@ -130,15 +139,15 @@ def run(source_dir: str, output_dir: str) -> list[str]:
     annotator = AnnotatorService()
 
     # Step 1 — Discover
-    print(f"[numba-build] Discovering Python files in '{source_dir}'...")
+    print(f"[forge] Discovering Python files in '{source_dir}'...")
     paths = patcher.discover(source_dir, extensions=[".py"])
     if not paths:
         raise RuntimeError(f"No Python files found in '{source_dir}'.")
-    print(f"[numba-build] Found {len(paths)} file(s): {paths}")
+    print(f"[forge] Found {len(paths)} file(s): {paths}")
 
     # Step 2 — LLM inference
     payload = patcher.to_json(source_dir, paths)
-    print("[numba-build] Calling LLM for modularisation...")
+    print("[forge] Calling LLM for modularization...")
     try:
         model_data = model.modularize(payload)
     except Exception as exc:
@@ -146,7 +155,7 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 
     tokens = model_data.get("tokens", {})
     print(
-        f"[numba-build] LLM response received "
+        f"[forge] LLM response received "
         f"({model_data.get('time', 'n/a')}, {tokens.get('total', '?')} tokens)."
     )
 
@@ -181,14 +190,14 @@ def run(source_dir: str, output_dir: str) -> list[str]:
             os.unlink(tmp)
 
     # Step 4 — Numba annotation
-    print(f"[numba-build] Annotating {len(documents)} file(s) with @numba.njit...")
+    print(f"[forge] Annotating {len(documents)} file(s) with @numba.njit...")
     annotated_documents = _annotate_documents(annotator, documents)
 
     # Step 5 — Write artefacts
-    print(f"[numba-build] Writing optimised files to '{output_dir}'...")
+    print(f"[forge] Writing optimised files to '{output_dir}'...")
     created = patcher.to_files(output_dir, annotated_documents)
 
-    print(f"[numba-build] Done. {len(created)} file(s) written:")
+    print(f"[forge] Done. {len(created)} file(s) written:")
     for path in created:
         print(f"  - {path}")
 
@@ -196,13 +205,13 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 
 
 def main() -> None:
-    """Entry point for the `numba-build` CLI command."""
+    """Entry point for the `forge` CLI command."""
     args = _parse_args()
     _validate_env()
     try:
         run(args.source_dir, args.output_dir)
     except (EnvironmentError, RuntimeError) as exc:
-        print(f"[numba-build] ERROR: {exc}", file=sys.stderr)
+        print(f"[forge] ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
 

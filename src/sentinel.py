@@ -119,6 +119,7 @@ class Middleware:
         -------
         dict: {function_name: {"status": "ok"|"failed", "compile_ms"/"error": ...}}
         """
+        
         results = {}
         default_args = (np.zeros(1, dtype=np.float64),)
 
@@ -155,6 +156,7 @@ class Middleware:
         KeyError  — function not registered.
         RuntimeError — optimised call raised and no fallback is available.
         """
+        
         if func_name not in self._optimized:
             raise KeyError(f"No function registered under '{func_name}'.")
 

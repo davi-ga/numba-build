@@ -1,8 +1,8 @@
 # ==========================================================================
-# cloudbuild.yaml — Template for end-users of numba-build
+# cloudbuild.yaml — Template for end-users of forge
 #
 # This pipeline is intended for a project that already has a web server
-# (Flask, FastAPI, etc.) and wants to use numba-build to JIT-optimise
+# (Flask, FastAPI, etc.) and wants to use forge to JIT-optimise
 # a specific folder of computation functions before deploying to Cloud Run.
 #
 # Expected project layout (adapt to your own):
@@ -12,7 +12,7 @@
 #     requirements.txt        ← your application dependencies
 #     Dockerfile              ← your own Dockerfile (see notes below)
 #     calc_functions/         ← folder with pure-Python helper functions
-#       pricing.py              that numba-build will annotate with @numba.njit
+#       pricing.py              that forge will annotate with @numba.njit
 #       math_utils.py
 #     optimized/              ← output_dir; created/overwritten by this pipeline
 #       pricing.py              (numba-optimised versions — do NOT commit these)
@@ -47,22 +47,22 @@ substitutions:
   _OUTPUT_DIR: optimized
   _SERVICE_NAME: my-service
   _REGION: us-central1
-  _TAG: latest 
+  _TAG: latest
 
 steps:
   # ------------------------------------------------------------------------ #
-  # 1. Install numba-build and run it in the same container so the binary
+  # 1. Install forge and run it in the same container so the binary
   #    is available in $PATH. Cloud Build steps are isolated containers —
   #    packages installed in one step do not persist to the next.
   # ------------------------------------------------------------------------ #
   - name: "python:3.12-slim"
-    id: numba-build
+    id: forge
     entrypoint: bash
     args:
       - "-c"
       - |
         pip install --no-cache-dir .[build] && \
-        numba-build --source-dir $_SOURCE_DIR --output-dir $_OUTPUT_DIR
+        forge --source-dir $_SOURCE_DIR --output-dir $_OUTPUT_DIR
     secretEnv:
       - "GEMINI_API_KEY"
       - "PROMPT"
@@ -79,7 +79,7 @@ steps:
         pip install --quiet flake8 && \
         flake8 $_OUTPUT_DIR/ --max-line-length=120 --extend-ignore=E501,W503,E302,W292
     waitFor:
-      - numba-build
+      - forge
 
   # ------------------------------------------------------------------------ #
   # 4. Build the Docker image

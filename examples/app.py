@@ -2,7 +2,7 @@
 app.py — Example Flask web server for a pricing/risk service.
 
 At runtime the application imports the numba-optimised versions of pricing
-and risk from the `optimized/` directory, which is produced by numba-build
+and risk from the `optimized/` directory, which is produced by forge
 during the CI/CD pipeline and copied into the container image.
 
 Endpoints
@@ -55,7 +55,9 @@ def options_surface():
     n_paths = int(body.get("n_paths", 500))
     steps_per_year = int(body.get("steps_per_year", 52))
 
-    surface = mc_options_surface(S, strikes, maturities, r, sigma, n_paths, steps_per_year)
+    surface = mc_options_surface(
+        S, strikes, maturities, r, sigma, n_paths, steps_per_year
+    )
     return jsonify({"surface": [[float(v) for v in row] for row in surface]})
 
 

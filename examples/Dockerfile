@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Web server entrypoint
 COPY app.py .
 
-# Numba-optimised helpers produced by numba-build during the CI/CD pipeline.
+# Numba-optimised helpers produced by forge during the CI/CD pipeline.
 # These replace utils/ at runtime with @numba.njit-annotated versions.
 COPY optimized/ optimized/
 

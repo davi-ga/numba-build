@@ -2,7 +2,7 @@
 risk.py — Portfolio VaR Monte Carlo + Stress Scenarios
 
 These are the raw, un-optimised helpers. During the CI/CD pipeline,
-numba-build reads this file, annotates the eligible functions with
+forge reads this file, annotates the eligible functions with
 @numba.njit, and writes the result to the output directory (e.g. optimized/).
 The application imports from that output directory at runtime.
 """

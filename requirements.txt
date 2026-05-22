@@ -5,3 +5,4 @@ numba
 pyflakes
 google-genai
 python-dotenv
+pytest

@@ -1,6 +1,7 @@
 import json
 import os
 from typing import List, Dict, Optional
+from utils.deep import DEEP_TO_LIST_SRC
 
 
 class PatcherService:
@@ -65,3 +66,15 @@ class PatcherService:
             created.append(abs_path)
 
         return created
+
+    def emit_helpers_module(self, output_dir: str) -> str:
+        """Write ``_numba_helpers.py`` with the Numba helper functions to *output_dir*.
+
+        Returns the absolute path of the written file.
+        """
+
+        os.makedirs(output_dir, exist_ok=True)
+        dest = os.path.join(output_dir, "_numba_helpers.py")
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write(DEEP_TO_LIST_SRC.lstrip("\n"))
+        return dest

@@ -25,6 +25,7 @@ import sys
 from services.annotator import AnnotatorService
 from services.model import ModelService
 from services.patcher import PatcherService
+from services.tester import TesterService
 import py_compile, tempfile, os
 
 
@@ -137,6 +138,7 @@ def run(source_dir: str, output_dir: str) -> list[str]:
     patcher = PatcherService()
     model = ModelService()
     annotator = AnnotatorService()
+    tester = TesterService(model)
 
     # Step 1 — Discover
     print(f"[forge] Discovering Python files in '{source_dir}'...")
@@ -196,6 +198,16 @@ def run(source_dir: str, output_dir: str) -> list[str]:
     # Step 5 — Write artefacts
     print(f"[forge] Writing optimised files to '{output_dir}'...")
     created = patcher.to_files(output_dir, annotated_documents)
+    helpers_path = patcher.emit_helpers_module(output_dir)
+    created.append(helpers_path)
+
+    # Step 6 — Generate equivalence tests
+    original_docs = json.loads(payload)
+    test_file_path = tester.generate(original_docs, output_dir)
+    if test_file_path:
+        created.append(test_file_path)
+        # Step 7 — Run tests against input and output
+        tester.run(test_file_path, source_dir, output_dir)
 
     print(f"[forge] Done. {len(created)} file(s) written:")
     for path in created:

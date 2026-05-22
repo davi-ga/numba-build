@@ -35,28 +35,113 @@ class _EmptyListPatcher(ast.NodeTransformer):
         return node
 
 
-_DEEP_TO_LIST_SRC = """
-from numba.typed import List as NumbaList
+class _GenExprToListComp(ast.NodeTransformer):
+    """Replaces generator expressions with list comprehensions.
 
-def _sanitize_for_numba(obj):
-    if isinstance(obj, list):
-        typed_l = NumbaList()
-        for item in obj:
-            typed_l.append(_sanitize_for_numba(item))
-        return typed_l
-    elif isinstance(obj, tuple):
-        return tuple(0.0 if isinstance(x, str) else _sanitize_for_numba(x) for x in obj)
-    return obj
+    Numba nopython mode does not support generator expressions — they compile
+    to closures that use ``yield``, which is unsupported.  List comprehensions
+    producing a single homogeneous numeric type are supported and are
+    semantically equivalent for every reduction built-in (sum, min, max, …).
+    """
 
-def _deep_to_list(obj):
-    try:
-        return [_deep_to_list(item) for item in obj]
-    except TypeError:
-        return obj
-"""
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.ListComp:
+        self.generic_visit(node)  # recurse into nested generators first
+        return ast.fix_missing_locations(
+            ast.ListComp(elt=node.elt, generators=node.generators)
+        )
+
+
+class _ZipToRangeLoop(ast.NodeTransformer):
+    """Replaces ``for a, b in zip(x, y):`` with an index-based loop.
+
+    Numba nopython mode does not support ``zip()`` over typed lists.  An
+    equivalent ``for _zip_i in range(len(x)): a, b = x[_zip_i], y[_zip_i]``
+    is fully supported and semantically identical for same-length sequences.
+    """
+
+    def visit_For(self, node: ast.For) -> ast.For:
+        self.generic_visit(node)  # recurse into nested loops first
+
+        if not (
+            isinstance(node.iter, ast.Call)
+            and isinstance(node.iter.func, ast.Name)
+            and node.iter.func.id == "zip"
+            and len(node.iter.args) >= 2
+            and isinstance(node.target, ast.Tuple)
+            and len(node.target.elts) == len(node.iter.args)
+        ):
+            return node
+
+        zip_args = node.iter.args
+        idx = "_zip_i"
+
+        range_call = ast.Call(
+            func=ast.Name(id="range", ctx=ast.Load()),
+            args=[
+                ast.Call(
+                    func=ast.Name(id="len", ctx=ast.Load()),
+                    args=[zip_args[0]],
+                    keywords=[],
+                )
+            ],
+            keywords=[],
+        )
+
+        unpack = ast.Assign(
+            targets=[node.target],
+            value=ast.Tuple(
+                elts=[
+                    ast.Subscript(
+                        value=arg,
+                        slice=ast.Name(id=idx, ctx=ast.Load()),
+                        ctx=ast.Load(),
+                    )
+                    for arg in zip_args
+                ],
+                ctx=ast.Load(),
+            ),
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+        )
+
+        new_for = ast.For(
+            target=ast.Name(id=idx, ctx=ast.Store()),
+            iter=range_call,
+            body=[unpack] + node.body,
+            orelse=node.orelse,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+        )
+        return ast.fix_missing_locations(new_for)
 
 
 class Inserter(ast.NodeTransformer):
+
+    def __init__(self) -> None:
+        self._internal_callees: set = set()
+
+    def _collect_internal_callees(self, tree: ast.AST) -> set:
+        """Return names of module-level functions called by other module-level functions.
+
+        These must stay as plain ``@numba.njit`` functions so that JIT-to-JIT
+        calls continue to work.  Only functions that are exclusively called
+        from plain Python should receive the sanitising wrapper.
+        """
+        top_level = {
+            node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        called: set = set()
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                for child in ast.walk(node):
+                    if (
+                        isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Name)
+                        and child.func.id in top_level
+                        and child.func.id != node.name
+                    ):
+                        called.add(child.func.id)
+        return called
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
         return node
@@ -82,6 +167,80 @@ class Inserter(ast.NodeTransformer):
                 return True
             if isinstance(dec, ast.Name) and dec.id in ("njit", "jit"):
                 return True
+        return False
+
+    def _has_str_in_annotations(self, node: ast.FunctionDef) -> bool:
+        """Return True if any parameter or return annotation references the str type.
+
+        Functions whose signatures mention str cannot be JIT-compiled by Numba
+        in nopython mode (heterogeneous tuples / string scalars are unsupported).
+        """
+        annotations = [
+            arg.annotation
+            for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            if arg.annotation is not None
+        ]
+        if node.returns is not None:
+            annotations.append(node.returns)
+        for ann in annotations:
+            for child in ast.walk(ann):
+                if isinstance(child, ast.Name) and child.id == "str":
+                    return True
+                if isinstance(child, ast.Constant) and child.value == "str":
+                    return True
+        return False
+
+    def _strip_str_from_annotations(self, node: ast.FunctionDef) -> None:
+        """Replace every ``str`` type reference in annotations with ``float``.
+
+        The wrapper already converts strings to 0.0 via ``_sanitize_for_numba``
+        before calling the JIT function, so the JIT signature must only contain
+        numeric types that Numba can compile.
+        """
+
+        class _StrToFloat(ast.NodeTransformer):
+            def visit_Name(self, n: ast.Name) -> ast.Name:  # noqa: ANN001
+                if n.id == "str":
+                    n.id = "float"
+                return n
+
+        replacer = _StrToFloat()
+        for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
+            if arg.annotation is not None:
+                arg.annotation = replacer.visit(arg.annotation)
+                ast.fix_missing_locations(arg.annotation)
+        if node.returns is not None:
+            node.returns = replacer.visit(node.returns)
+            ast.fix_missing_locations(node.returns)
+
+    def _has_nested_list_in_annotations(self, node: ast.FunctionDef) -> bool:
+        """Return True if any annotation contains a nested list (list[list[...]]).
+
+        Numba cannot reflect nested typed lists back to Python after JIT
+        execution.  Functions with such parameter or return annotations must
+        remain as plain Python.
+        """
+        annotations = [
+            arg.annotation
+            for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            if arg.annotation is not None
+        ]
+        if node.returns is not None:
+            annotations.append(node.returns)
+        for ann in annotations:
+            for child in ast.walk(ann):
+                if (
+                    isinstance(child, ast.Subscript)
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id == "list"
+                ):
+                    inner = child.slice
+                    if (
+                        isinstance(inner, ast.Subscript)
+                        and isinstance(inner.value, ast.Name)
+                        and inner.value.id == "list"
+                    ):
+                        return True
         return False
 
     def _has_unsupported_calls(self, node: ast.FunctionDef) -> bool:
@@ -178,12 +337,16 @@ class Inserter(ast.NodeTransformer):
 
         if self._has_numba_decorator(node):
             return node
-        if self._has_unsupported_calls(node):
+        if self._has_unsupported_calls(node) or self._has_nested_list_in_annotations(
+            node
+        ):
             return node
 
-        list_names = self._get_empty_list_names(node)
-        needs_wrapper = bool(list_names) and self._returns_typed_list(node, list_names)
+        if self._has_str_in_annotations(node):
+            self._strip_str_from_annotations(node)
 
+        _GenExprToListComp().visit(node)
+        _ZipToRangeLoop().visit(node)
         _EmptyListPatcher().generic_visit(node)
 
         decorator = ast.Attribute(
@@ -191,17 +354,20 @@ class Inserter(ast.NodeTransformer):
         )
         node.decorator_list.insert(0, decorator)
 
-        if needs_wrapper:
-            orig_name = node.name
-            jit_name = f"_{orig_name}_jit"
-            node.name = jit_name
-            wrapper = self._make_wrapper(orig_name, jit_name, node.args)
+        if node.name in self._internal_callees or node.name.startswith("_"):
+            # Internal helper — keep as bare JIT so other JIT functions can call it
+            return ast.fix_missing_locations(node)
 
-            return [ast.fix_missing_locations(node), ast.fix_missing_locations(wrapper)]
+        orig_name = node.name
+        jit_name = f"_{orig_name}_jit"
+        node.name = jit_name
+        wrapper = self._make_wrapper(orig_name, jit_name, node.args)
 
-        return ast.fix_missing_locations(node)
+        return [ast.fix_missing_locations(node), ast.fix_missing_locations(wrapper)]
 
     def importer(self, tree: ast.AST) -> None:
+        self._internal_callees = self._collect_internal_callees(tree)
+
         if not any(
             isinstance(node, ast.Import) and node.names[0].name == "numba"
             for node in tree.body
@@ -211,17 +377,22 @@ class Inserter(ast.NodeTransformer):
             ast.fix_missing_locations(import_node)
 
         if not any(
-            isinstance(node, ast.FunctionDef) and node.name == "_deep_to_list"
+            isinstance(node, ast.ImportFrom) and node.module == "_numba_helpers"
             for node in tree.body
         ):
-            helper_nodes = ast.parse(_DEEP_TO_LIST_SRC).body
-
-            for node in helper_nodes:
-                ast.fix_missing_locations(node)
+            helpers_import = ast.ImportFrom(
+                module="_numba_helpers",
+                names=[
+                    ast.alias(name="_sanitize_for_numba"),
+                    ast.alias(name="_deep_to_list"),
+                ],
+                level=0,
+            )
+            ast.fix_missing_locations(helpers_import)
 
             insert_idx = 0
             for i, node in enumerate(tree.body):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     insert_idx = i + 1
 
-            tree.body[insert_idx:insert_idx] = helper_nodes
+            tree.body.insert(insert_idx, helpers_import)

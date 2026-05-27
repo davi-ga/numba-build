@@ -42,11 +42,7 @@ class PatcherService:
         documents = self._pathing(root, relative_paths)
         return json.dumps(documents, ensure_ascii=False, indent=2)
 
-    def to_files(self, output_dir: str, raw_json: str) -> List[str]:
-        documents: List[Dict[str, str]] = (
-            json.loads(raw_json) if isinstance(raw_json, str) else raw_json
-        )
-
+    def to_files(self, output_dir: str, documents: List[Dict[str, str]]) -> List[str]:
         created = []
         for doc in documents:
             rel_path = doc["path"]

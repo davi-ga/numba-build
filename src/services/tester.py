@@ -70,11 +70,29 @@ class TesterService:
             print(f"[forge] Running tests against {label}...")
             env = os.environ.copy()
             env["MODULE_DIR"] = module_dir
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", test_file_path, "-v", "--tb=short"],
-                env=env,
-                check=False,
-            )
+            timeout = int(os.getenv("FORGE_TEST_TIMEOUT", "120"))
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        test_file_path,
+                        "-v",
+                        "--tb=short",
+                    ],
+                    env=env,
+                    check=False,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                all_passed = False
+                print(
+                    f"[forge] WARNING: Tests timed out against {label} "
+                    f"(>{timeout}s).",
+                    file=sys.stderr,
+                )
+                continue
             if result.returncode != 0:
                 all_passed = False
                 print(

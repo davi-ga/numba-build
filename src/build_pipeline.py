@@ -20,13 +20,14 @@ Environment variables:
 import argparse
 import json
 import os
+import py_compile
 import sys
+import tempfile
 
 from services.annotator import AnnotatorService
 from services.model import ModelService
 from services.patcher import PatcherService
 from services.tester import TesterService
-import py_compile, tempfile, os
 
 
 def _parse_args() -> argparse.Namespace:
@@ -58,12 +59,9 @@ def _validate_env() -> None:
         if not os.getenv(v)
     ]
     if missing:
-        print(
-            f"[forge] ERROR: Missing required environment variable(s): "
-            f"{', '.join(missing)}",
-            file=sys.stderr,
+        raise EnvironmentError(
+            f"Missing required environment variable(s): {', '.join(missing)}"
         )
-        sys.exit(1)
 
 
 def _annotate_documents(
@@ -104,7 +102,11 @@ def _validate_documents(documents: list) -> None:
             )
 
 
-def run(source_dir: str, output_dir: str) -> list[str]:
+def run(
+    source_dir: str,
+    output_dir: str,
+    max_attempts: int | None = None,
+) -> list[str]:
     """
     Execute the full build pipeline programmatically.
 
@@ -114,6 +116,9 @@ def run(source_dir: str, output_dir: str) -> list[str]:
         Directory containing the raw Python source files to optimise.
     output_dir:
         Directory where the refactored, Numba-annotated files will be written.
+    max_attempts:
+        Maximum LLM retry attempts when equivalence tests fail.
+        Defaults to FORGE_MAX_ATTEMPTS env var, or 3.
 
     Returns
     -------
@@ -125,15 +130,9 @@ def run(source_dir: str, output_dir: str) -> list[str]:
     RuntimeError     — LLM call failed or returned invalid output.
     """
 
-    missing = [
-        v
-        for v in ("GEMINI_API_KEY", "MODULARIZE_PROMPT", "TEST_PROMPT")
-        if not os.getenv(v)
-    ]
-    if missing:
-        raise EnvironmentError(
-            f"Missing required environment variable(s): {', '.join(missing)}"
-        )
+    _validate_env()
+    if max_attempts is None:
+        max_attempts = int(os.getenv("FORGE_MAX_ATTEMPTS", "3"))
 
     patcher = PatcherService()
     model = ModelService()
@@ -147,67 +146,97 @@ def run(source_dir: str, output_dir: str) -> list[str]:
         raise RuntimeError(f"No Python files found in '{source_dir}'.")
     print(f"[forge] Found {len(paths)} file(s): {paths}")
 
-    # Step 2 — LLM inference
     payload = patcher.to_json(source_dir, paths)
-    print("[forge] Calling LLM for modularization...")
-    try:
-        model_data = model.modularize(payload)
-    except Exception as exc:
-        raise RuntimeError(f"LLM call failed: {exc}") from exc
-
-    tokens = model_data.get("tokens", {})
-    print(
-        f"[forge] LLM response received "
-        f"({model_data.get('time', 'n/a')}, {tokens.get('total', '?')} tokens)."
-    )
-
-    # Step 3 — Parse LLM output
-    raw_text: str = model_data["text"]
-
-    stripped = raw_text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[-1]  # drop opening fence line
-        stripped = stripped.rsplit("```", 1)[0]  # drop closing fence
-        stripped = stripped.strip()
-    try:
-        documents: list[dict] = json.loads(stripped)
-        if not isinstance(documents, list):
-            raise ValueError("LLM output is not a JSON array.")
-        _validate_documents(documents)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise RuntimeError(
-            f"LLM did not return a valid JSON array of files: {exc}\n"
-            f"Raw output (first 500 chars): {raw_text}"
-        ) from exc
-
-    for doc in documents:
-        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
-            f.write(doc["body"].encode())
-            tmp = f.name
-        try:
-            py_compile.compile(tmp, doraise=True)
-        except py_compile.PyCompileError as exc:
-            raise exc
-        finally:
-            os.unlink(tmp)
-
-    # Step 4 — Numba annotation
-    print(f"[forge] Annotating {len(documents)} file(s) with @numba.njit...")
-    annotated_documents = _annotate_documents(annotator, documents)
-
-    # Step 5 — Write artefacts
-    print(f"[forge] Writing optimised files to '{output_dir}'...")
-    created = patcher.to_files(output_dir, annotated_documents)
-    helpers_path = patcher.emit_helpers_module(output_dir)
-    created.append(helpers_path)
-
-    # Step 6 — Generate equivalence tests
     original_docs = json.loads(payload)
+
+    # Generate equivalence tests once — re-used across every LLM retry
     test_file_path = tester.generate(original_docs, output_dir)
-    if test_file_path:
-        created.append(test_file_path)
-        # Step 7 — Run tests against input and output
-        tester.run(test_file_path, source_dir, output_dir)
+
+    prev_created: list[str] = []
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            print(
+                f"[forge] Retrying LLM pipeline (attempt {attempt}/{max_attempts})..."
+            )
+            for path in prev_created:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+        # Step 2 — LLM inference
+        print("[forge] Calling LLM for modularization...")
+        try:
+            model_data = model.modularize(payload)
+        except Exception as exc:
+            raise RuntimeError(f"LLM call failed: {exc}") from exc
+
+        tokens = model_data.get("tokens", {})
+        print(
+            f"[forge] LLM response received "
+            f"({model_data.get('time', 'n/a')}, {tokens.get('total', '?')} tokens)."
+        )
+
+        # Step 3 — Parse LLM output
+        raw_text: str = model_data["text"]
+
+        stripped = raw_text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1]
+            stripped = stripped.rsplit("```", 1)[0]
+            stripped = stripped.strip()
+        try:
+            documents: list[dict] = json.loads(stripped)
+            if not isinstance(documents, list):
+                raise ValueError("LLM output is not a JSON array.")
+            _validate_documents(documents)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                f"LLM did not return a valid JSON array of files: {exc}\n"
+                f"Raw output (first 500 chars): {raw_text}"
+            ) from exc
+
+        for doc in documents:
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+                f.write(doc["body"].encode())
+                tmp = f.name
+            try:
+                py_compile.compile(tmp, doraise=True)
+            except py_compile.PyCompileError as exc:
+                raise RuntimeError(f"Syntax error in '{doc['path']}': {exc}") from exc
+            finally:
+                os.unlink(tmp)
+
+        # Step 4 — Numba annotation
+        print(f"[forge] Annotating {len(documents)} file(s) with @numba.njit...")
+        annotated_documents = _annotate_documents(annotator, documents)
+
+        # Step 5 — Write artefacts
+        print(f"[forge] Writing optimised files to '{output_dir}'...")
+        created = patcher.to_files(output_dir, annotated_documents)
+        helpers_path = patcher.emit_helpers_module(output_dir)
+        created.append(helpers_path)
+        prev_created = list(created)
+
+        # Step 6 — Run equivalence tests
+        if test_file_path:
+            if test_file_path not in created:
+                created.append(test_file_path)
+            tests_passed = tester.run(test_file_path, source_dir, output_dir)
+            if not tests_passed:
+                if attempt < max_attempts:
+                    print(
+                        f"[forge] WARNING: Tests failed on attempt {attempt}. "
+                        "Reprocessing with LLM...",
+                        file=sys.stderr,
+                    )
+                    continue
+                else:
+                    raise RuntimeError(
+                        f"Equivalence tests failed after {max_attempts} attempt(s). "
+                        "Aborting."
+                    )
+        break
 
     print(f"[forge] Done. {len(created)} file(s) written:")
     for path in created:
@@ -219,7 +248,6 @@ def run(source_dir: str, output_dir: str) -> list[str]:
 def main() -> None:
     """Entry point for the `forge` CLI command."""
     args = _parse_args()
-    _validate_env()
     try:
         run(args.source_dir, args.output_dir)
     except (EnvironmentError, RuntimeError) as exc:

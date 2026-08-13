@@ -15,6 +15,7 @@ Environment variables:
     GEMINI_API_KEY  Gemini API key (required)
     MODULARIZE_PROMPT   System prompt sent to the LLM (required)
     TEST_PROMPT         Test prompot sent to the LLM (required)
+    
 """
 
 import argparse

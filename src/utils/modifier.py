@@ -172,6 +172,86 @@ class Inserter(ast.NodeTransformer):
                 return True
         return False
 
+    def _strip_duplicate_numba_decorators(
+        self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]
+    ) -> None:
+        """Remove duplicate or incompatible numba decorators.
+        
+        If the function has @numba.vectorize or @vectorize, remove any @numba.njit on top.
+        If there are multiple @numba.njit, keep only the first one.
+        """
+        has_vectorize = False
+        for dec in node.decorator_list:
+            dec_func = dec
+            if isinstance(dec, ast.Call):
+                dec_func = dec.func
+            
+            if isinstance(dec_func, ast.Name) and dec_func.id == "vectorize":
+                has_vectorize = True
+                break
+            if (
+                isinstance(dec_func, ast.Attribute)
+                and isinstance(dec_func.value, ast.Name)
+                and dec_func.value.id == "numba"
+                and dec_func.attr == "vectorize"
+            ):
+                has_vectorize = True
+                break
+        
+        if has_vectorize:
+            node.decorator_list = [
+                dec for dec in node.decorator_list
+                if not (
+                    (isinstance(dec, ast.Attribute)
+                     and isinstance(dec.value, ast.Name)
+                     and dec.value.id == "numba"
+                     and dec.attr in ("njit", "jit"))
+                    or
+                    (isinstance(dec, ast.Call)
+                     and isinstance(dec.func, ast.Attribute)
+                     and isinstance(dec.func.value, ast.Name)
+                     and dec.func.value.id == "numba"
+                     and dec.func.attr in ("njit", "jit"))
+                    or
+                    (isinstance(dec, ast.Name) and dec.id in ("njit", "jit"))
+                    or
+                    (isinstance(dec, ast.Call)
+                     and isinstance(dec.func, ast.Name)
+                     and dec.func.id in ("njit", "jit"))
+                )
+            ]
+            return
+        
+        seen_njit = False
+        filtered = []
+        for dec in node.decorator_list:
+            is_njit = (
+                (isinstance(dec, ast.Attribute)
+                 and isinstance(dec.value, ast.Name)
+                 and dec.value.id == "numba"
+                 and dec.attr in ("njit", "jit"))
+                or
+                (isinstance(dec, ast.Call)
+                 and isinstance(dec.func, ast.Attribute)
+                 and isinstance(dec.func.value, ast.Name)
+                 and dec.func.value.id == "numba"
+                 and dec.func.attr in ("njit", "jit"))
+                or
+                (isinstance(dec, ast.Name) and dec.id in ("njit", "jit"))
+                or
+                (isinstance(dec, ast.Call)
+                 and isinstance(dec.func, ast.Name)
+                 and dec.func.id in ("njit", "jit"))
+            )
+            
+            if is_njit:
+                if not seen_njit:
+                    filtered.append(dec)
+                    seen_njit = True
+            else:
+                filtered.append(dec)
+        node.decorator_list = filtered
+
     def _has_str_in_annotations(self, node: ast.FunctionDef) -> bool:
         """Return True if any parameter or return annotation references the str type.
 
@@ -338,6 +418,8 @@ class Inserter(ast.NodeTransformer):
         if node.name in ("_sanitize_for_numba", "_deep_to_list"):
             return node
 
+        self._strip_duplicate_numba_decorators(node)
+
         if self._has_numba_decorator(node):
             return node
         if self._has_unsupported_calls(node) or self._has_nested_list_in_annotations(
@@ -357,8 +439,9 @@ class Inserter(ast.NodeTransformer):
         )
         node.decorator_list.insert(0, decorator)
 
+        self._strip_duplicate_numba_decorators(node)
+
         if node.name in self._internal_callees or node.name.startswith("_"):
-            # Internal helper — keep as bare JIT so other JIT functions can call it
             return ast.fix_missing_locations(node)
 
         orig_name = node.name

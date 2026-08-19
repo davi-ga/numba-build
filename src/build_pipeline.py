@@ -26,8 +26,10 @@ import sys
 import tempfile
 
 from services.annotator import AnnotatorService
+from services.compatibility import NumbaCompatibilityChecker
 from services.model import ModelService
 from services.patcher import PatcherService
+from services.preprocessor import PreprocessorService
 from services.tester import TesterService
 
 
@@ -139,6 +141,8 @@ def run(
     model = ModelService()
     annotator = AnnotatorService()
     tester = TesterService(model)
+    preprocessor = PreprocessorService()
+    compat_checker = NumbaCompatibilityChecker()
 
     # Step 1 — Discover
     print(f"[forge] Discovering Python files in '{source_dir}'...")
@@ -149,6 +153,11 @@ def run(
 
     payload = patcher.to_json(source_dir, paths)
     original_docs = json.loads(payload)
+
+    # Step 1.5 — Preprocess (AST transformers before LLM)
+    print(f"[forge] Preprocessing {len(original_docs)} file(s)...")
+    preprocessed_docs = preprocessor.transform_documents(original_docs)
+    payload = json.dumps(preprocessed_docs, ensure_ascii=False, indent=2)
 
     # Generate equivalence tests once — re-used across every LLM retry
     test_file_path = tester.generate(original_docs, output_dir)
@@ -207,6 +216,35 @@ def run(
                 raise RuntimeError(f"Syntax error in '{doc['path']}': {exc}") from exc
             finally:
                 os.unlink(tmp)
+
+        # Step 3.5 — Numba compatibility check
+        print("[forge] Checking Numba compatibility...")
+        all_compatible = True
+        for doc in documents:
+            is_compatible, issues = compat_checker.check(doc["body"])
+            if not is_compatible:
+                all_compatible = False
+                print(
+                    f"[forge] WARNING: Compatibility issues in '{doc['path']}':",
+                    file=sys.stderr,
+                )
+                for severity, line, message in issues:
+                    print(f"  [{severity.upper()}] Line {line}: {message}", file=sys.stderr)
+
+        if not all_compatible:
+            if attempt < max_attempts:
+                print(
+                    f"[forge] WARNING: Compatibility issues found on attempt {attempt}. "
+                    "Reprocessing with LLM...",
+                    file=sys.stderr,
+                )
+                continue
+            else:
+                print(
+                    f"[forge] WARNING: Compatibility issues remain after {max_attempts} attempt(s). "
+                    "Proceeding with annotation (some functions may fail at runtime).",
+                    file=sys.stderr,
+                )
 
         # Step 4 — Numba annotation
         print(f"[forge] Annotating {len(documents)} file(s) with @numba.njit...")

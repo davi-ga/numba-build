@@ -1,4 +1,5 @@
 DEEP_TO_LIST_SRC = """
+import numpy as np
 from numba.typed import List as NumbaList
 
 def _sanitize_for_numba(obj):
@@ -12,6 +13,8 @@ def _sanitize_for_numba(obj):
     return obj
 
 def _deep_to_list(obj):
+    if isinstance(obj, np.ndarray):
+        return obj
     if isinstance(obj, (str, bytes)):
         return obj
     try:

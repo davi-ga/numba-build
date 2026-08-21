@@ -129,13 +129,19 @@ class Inserter(ast.NodeTransformer):
         These must stay as plain ``@numba.njit`` functions so that JIT-to-JIT
         calls continue to work.  Only functions that are exclusively called
         from plain Python should receive the sanitising wrapper.
+        
+        This now detects TRANSITIVE call chains: if A calls B, and B calls C,
+        then A, B, and C are all internal callees.
         """
         top_level = {
             node.name for node in tree.body if isinstance(node, ast.FunctionDef)
         }
-        called: set = set()
+        
+        # Build call graph: function_name -> set of functions it calls
+        call_graph = {}
         for node in tree.body:
             if isinstance(node, ast.FunctionDef):
+                callees = set()
                 for child in ast.walk(node):
                     if (
                         isinstance(child, ast.Call)
@@ -143,7 +149,34 @@ class Inserter(ast.NodeTransformer):
                         and child.func.id in top_level
                         and child.func.id != node.name
                     ):
-                        called.add(child.func.id)
+                        callees.add(child.func.id)
+                call_graph[node.name] = callees
+        
+        # Find all functions that are called (directly or transitively)
+        called: set = set()
+        
+        # First pass: direct callees
+        for caller, callees in call_graph.items():
+            called.update(callees)
+        
+        # Second pass: transitive callees (fixed-point iteration)
+        # If A calls B, and B is in called, then A should also be in called
+        # (because A is called by someone who needs B to be JIT)
+        changed = True
+        while changed:
+            changed = False
+            for caller, callees in call_graph.items():
+                # If this function calls any internal callee, it should also be internal
+                if callees & called and caller not in called:
+                    # Check if caller is called by someone
+                    is_called = any(
+                        caller in other_callees
+                        for other_callees in call_graph.values()
+                    )
+                    if is_called:
+                        called.add(caller)
+                        changed = True
+        
         return called
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:

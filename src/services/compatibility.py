@@ -23,18 +23,29 @@ class NumbaCompatibilityChecker:
 
     _UNSUPPORTED_NUMPY_FUNCS = frozenset({
         "ravel_multi_index", "unravel_index", "clip",
-        "where", "select", "piecewise",
+        "where", "select", "piecewise", "vectorize",
     })
+
+    _UNSUPPORTED_NUMPY_FUNCS_WITH_KWARGS = {
+        "unique": ["return_counts", "return_index", "return_inverse"],
+    }
 
     _UNSUPPORTED_BUILTINS = frozenset({
         "dict", "set", "frozenset",
         "print", "input", "open", "exec", "eval",
+        "hex", "bin", "oct", "chr", "ord",
     })
 
     _UNSUPPORTED_SCIPY_FUNCS = frozenset({
         "gammaln", "gamma", "betainc", "betaincinv",
         "erf", "erfc", "erfinv", "erfcinv",
         "loggamma", "digamma", "polygamma",
+    })
+
+    _UNSUPPORTED_EXTERNAL_LIBS = frozenset({
+        "sklearn", "KMeans", "AgglomerativeClustering",
+        "pairwise_distances", "PIL", "Image",
+        "plotly", "requests", "cv2",
     })
 
     def __init__(self):
@@ -78,6 +89,8 @@ class NumbaCompatibilityChecker:
             self._check_subscript(child, func_name)
             self._check_dict_set(child, func_name)
             self._check_try_except(child, func_name)
+            self._check_lambda(child, func_name)
+            self._check_external_libs(child, func_name)
 
     def _check_call(self, node: ast.AST, func_name: str):
         """Check for unsupported function calls."""
@@ -92,6 +105,15 @@ class NumbaCompatibilityChecker:
                             ("error", node.lineno,
                              f"Function '{func_name}': np.{node.func.attr}() is not supported in Numba nopython mode")
                         )
+                    # Check for np.unique with unsupported kwargs
+                    if node.func.attr in self._UNSUPPORTED_NUMPY_FUNCS_WITH_KWARGS:
+                        unsupported_kwargs = self._UNSUPPORTED_NUMPY_FUNCS_WITH_KWARGS[node.func.attr]
+                        for kw in node.keywords:
+                            if kw.arg in unsupported_kwargs:
+                                self.issues.append(
+                                    ("error", node.lineno,
+                                     f"Function '{func_name}': np.{node.func.attr}({kw.arg}=...) is not supported in Numba nopython mode")
+                                )
                 elif node.func.value.id in ("sps", "scipy", "stats"):
                     if node.func.attr in self._UNSUPPORTED_SCIPY_FUNCS:
                         self.issues.append(
@@ -143,6 +165,36 @@ class NumbaCompatibilityChecker:
                 ("error", node.lineno,
                  f"Function '{func_name}': try/except block found — not supported in Numba nopython mode")
             )
+
+    def _check_lambda(self, node: ast.AST, func_name: str):
+        """Check for lambda expressions (not supported in nopython mode)."""
+        if isinstance(node, ast.Lambda):
+            self.issues.append(
+                ("error", node.lineno,
+                 f"Function '{func_name}': Lambda expression found — not supported in Numba nopython mode. "
+                 "Convert to explicit loop or named function.")
+            )
+
+    def _check_external_libs(self, node: ast.AST, func_name: str):
+        """Check for external library usage (sklearn, PIL, plotly, etc)."""
+        # Check for function calls to external libraries
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id in self._UNSUPPORTED_EXTERNAL_LIBS:
+                    self.issues.append(
+                        ("error", node.lineno,
+                         f"Function '{func_name}': {node.func.id}() from external library — "
+                         "not supported in Numba nopython mode. Keep as Python wrapper.")
+                    )
+            elif isinstance(node.func, ast.Attribute):
+                # Check for sklearn.something, PIL.something, etc
+                if isinstance(node.func.value, ast.Name):
+                    if node.func.value.id in self._UNSUPPORTED_EXTERNAL_LIBS:
+                        self.issues.append(
+                            ("error", node.lineno,
+                             f"Function '{func_name}': {node.func.value.id}.{node.func.attr}() — "
+                             "external library not supported in Numba nopython mode. Keep as Python wrapper.")
+                        )
 
     def format_issues(self) -> str:
         """Format issues for display."""

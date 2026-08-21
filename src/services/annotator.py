@@ -1,6 +1,7 @@
 import ast
 
 from utils.modifier import Inserter
+from utils.numba_filter import NumbaDecoratorFilter
 
 
 class AnnotatorService:
@@ -13,5 +14,8 @@ class AnnotatorService:
         self.inserter.importer(tree)
 
         modified = self.inserter.visit(tree)
+
+        # Remove @numba.njit de funções que usam bibliotecas externas
+        modified = NumbaDecoratorFilter().visit(modified)
 
         return ast.unparse(modified)

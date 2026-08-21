@@ -5,10 +5,16 @@ These AST transformers run BEFORE the LLM to prepare code for Numba compilation:
 - ClassExtractor: Extracts class methods to module-level functions
 - IOStripper: Removes I/O operations (print, logging, file ops, try/except)
 - BooleanMaskRewriter: Converts boolean masking to explicit loops
+- VectorizeRewriter: Converts np.vectorize to explicit loops
+- BuiltinRewriter: Converts hex(), bin(), oct() to Numba-compatible functions
+- UniqueRewriter: Converts np.unique(return_counts=True) to manual implementation
 """
 
 import ast
 from typing import Union
+from utils.vectorize_rewriter import VectorizeRewriter
+from utils.builtin_rewriter import BuiltinRewriter
+from utils.unique_rewriter import UniqueRewriter
 
 
 class ClassExtractor(ast.NodeTransformer):
@@ -224,8 +230,12 @@ def preprocess_code(code: str) -> str:
     """
     tree = ast.parse(code)
     
+    # Apply transformers in order
     tree = ClassExtractor().visit(tree)
     tree = IOStripper().visit(tree)
     tree = BooleanMaskRewriter().visit(tree)
+    tree = VectorizeRewriter().visit(tree)
+    tree = BuiltinRewriter().visit(tree)
+    tree = UniqueRewriter().visit(tree)
     
     return ast.unparse(ast.fix_missing_locations(tree))

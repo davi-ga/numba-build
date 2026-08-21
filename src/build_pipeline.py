@@ -31,6 +31,9 @@ from services.model import ModelService
 from services.patcher import PatcherService
 from services.preprocessor import PreprocessorService
 from services.tester import TesterService
+from utils.vectorize_rewriter import VectorizeRewriter
+from utils.builtin_rewriter import BuiltinRewriter
+from utils.unique_rewriter import UniqueRewriter
 
 
 def _parse_args() -> argparse.Namespace:
@@ -91,6 +94,94 @@ def _annotate_documents(
 
         annotated.append({"path": path, "body": body})
     return annotated
+
+
+def _postprocess_documents(documents: list[dict]) -> list[dict]:
+    """Apply post-processing transformers after LLM generation.
+    
+    This converts patterns that the LLM might generate (like np.vectorize,
+    hex(), bin(), np.unique with return_counts) to Numba-compatible code.
+    """
+    import ast
+    from utils.unique_rewriter import NUMBA_UNIQUE_HELPER
+    from utils.builtin_rewriter import NUMBA_BUILTIN_HELPERS
+    
+    postprocessed = []
+    for doc in documents:
+        path = doc["path"]
+        body = doc["body"]
+        
+        if "__init__" in path:
+            postprocessed.append({"path": path, "body": body})
+            continue
+        
+        try:
+            tree = ast.parse(body)
+            
+            # Apply transformers
+            tree = VectorizeRewriter().visit(tree)
+            tree = BuiltinRewriter().visit(tree)
+            tree = UniqueRewriter().visit(tree)
+            
+            # Check if we need to add helper functions
+            needs_unique_helper = any(
+                isinstance(node, ast.Call) and 
+                isinstance(node.func, ast.Name) and 
+                node.func.id == '_np_unique_with_counts'
+                for node in ast.walk(tree)
+            )
+            
+            needs_builtin_helpers = any(
+                isinstance(node, ast.Call) and 
+                isinstance(node.func, ast.Name) and 
+                node.func.id in ('_int_to_hex', '_int_to_bin', '_int_to_oct')
+                for node in ast.walk(tree)
+            )
+            
+            body = ast.unparse(ast.fix_missing_locations(tree))
+            
+            # Add helper functions if needed (AFTER imports)
+            helpers_to_add = []
+            if needs_unique_helper:
+                helpers_to_add.append(NUMBA_UNIQUE_HELPER)
+            if needs_builtin_helpers:
+                helpers_to_add.append(NUMBA_BUILTIN_HELPERS)
+            
+            if helpers_to_add:
+                # Find the last import line
+                lines = body.split('\n')
+                last_import_idx = -1
+                has_numba_import = False
+                for i, line in enumerate(lines):
+                    if line.startswith('import ') or line.startswith('from '):
+                        last_import_idx = i
+                        if 'import numba' in line or 'from numba' in line:
+                            has_numba_import = True
+                
+                # Add 'import numba' if not present (helpers use @numba.njit)
+                if not has_numba_import:
+                    lines.insert(last_import_idx + 1, 'import numba')
+                    last_import_idx += 1
+                
+                # Insert helpers after imports
+                if last_import_idx >= 0:
+                    lines.insert(last_import_idx + 1, '\n'.join(helpers_to_add))
+                else:
+                    lines.insert(0, '\n'.join(helpers_to_add))
+                
+                body = '\n'.join(lines)
+            
+            print(f"[forge] Post-processed: {path}")
+        except SyntaxError as exc:
+            print(
+                f"[forge] WARNING: Skipping post-processing for '{path}' "
+                f"(SyntaxError): {exc}",
+                file=sys.stderr,
+            )
+        
+        postprocessed.append({"path": path, "body": body})
+    
+    return postprocessed
 
 
 def _validate_documents(documents: list) -> None:
@@ -245,6 +336,10 @@ def run(
                     "Proceeding with annotation (some functions may fail at runtime).",
                     file=sys.stderr,
                 )
+
+        # Step 3.6 — Post-process (convert LLM-generated patterns to Numba-compatible code)
+        print(f"[forge] Post-processing {len(documents)} file(s)...")
+        documents = _postprocess_documents(documents)
 
         # Step 4 — Numba annotation
         print(f"[forge] Annotating {len(documents)} file(s) with @numba.njit...")
